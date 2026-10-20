@@ -1,7 +1,7 @@
 'use strict';
 const path = require('path');
 const fs   = require('fs');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 // Composite actions do NOT auto-populate INPUT_* for `run:` steps — action.yml
 // forwards its inputs as WRITULOS_*-prefixed env vars, which are the primary
@@ -157,14 +157,23 @@ function parseDocMeta(content) {
   try { return JSON.parse(m[1]); } catch { return null; }
 }
 
+// A commit as git prints it, the same check public/pre-push.sh applies to
+// the same header field.
+const COMMIT_SHA_RE = /^[0-9a-f]{7,40}$/i;
+
 // Count commits that touched `filePath` in the range `<sinceSha>..<untilRef>`.
 // Returns a non-negative integer, or null if git can't answer (shallow clone,
 // unknown sha, etc.) so callers can degrade gracefully.
+//
+// The sha comes from a doc's writulos:meta header and the path from a file's
+// name, both written by whoever's commit was merged, so git gets them as
+// arguments and never through a shell. As one command string, either was
+// enough to run a command on a runner holding the API key and a write token.
 function gitDriftCount(sinceSha, untilRef, filePath) {
-  if (!sinceSha) return null;
+  if (typeof sinceSha !== 'string' || !COMMIT_SHA_RE.test(sinceSha)) return null;
   try {
-    const out = execSync(
-      `git rev-list --count ${sinceSha}..${untilRef} -- "${filePath}"`,
+    const out = execFileSync(
+      'git', ['rev-list', '--count', `${sinceSha}..${untilRef}`, '--', String(filePath)],
       { cwd: WORKSPACE, stdio: ['ignore', 'pipe', 'ignore'] }
     ).toString().trim();
     const n = parseInt(out, 10);
@@ -197,7 +206,8 @@ function getAllFiles(dir, root) {
       if (!entry.name.startsWith('.') && entry.name !== 'node_modules' && entry.name !== OUTPUT_DIR) {
         results = results.concat(getAllFiles(fullPath, root));
       }
-    } else {
+    } else if (entry.isFile()) {
+      // A link is neither: generateDoc refuses one, so a scan never counts it.
       const ext = entry.name.split('.').pop();
       if (ext && EXTS.has(ext)) results.push(path.relative(root, fullPath));
     }
@@ -213,12 +223,48 @@ const GH_HEADERS = {
   'X-GitHub-Api-Version': '2022-11-28',
 };
 
+/**
+ * Where a source file's doc goes: its path under OUTPUT_DIR, as .md. The path
+ * is a file's name in the repository, so it decides where a token that can
+ * write to the repository writes: null when it would leave OUTPUT_DIR, as a
+ * `.` or `..` segment that a backslash in a name makes after path.join has
+ * collapsed the literal ones.
+ */
+function docPathFor(filePath) {
+  const docPath = path
+    .join(OUTPUT_DIR, filePath.replace(/\.[^.]+$/, '.md'))
+    .replace(/\\/g, '/');
+  if (docPath.split('/').some((s) => s === '' || s === '.' || s === '..')) return null;
+  const base = path.posix.normalize(OUTPUT_DIR.replace(/\\/g, '/')).replace(/\/+$/, '');
+  return base === '.' || docPath.startsWith(`${base}/`) ? docPath : null;
+}
+
+/**
+ * A file the runner may read and upload: a regular file whose real path is
+ * inside the checkout and outside .git. A name comes from the repository, and
+ * a symlink, or a path through a linked directory, would upload whatever it
+ * points at: another file on the runner, or the checkout's credentials.
+ */
+function isCheckoutFile(absPath) {
+  try {
+    if (!fs.lstatSync(absPath).isFile()) return false;
+    const rel = path.relative(fs.realpathSync(WORKSPACE), fs.realpathSync(absPath));
+    if (!rel || path.isAbsolute(rel) || rel === '..' || rel.startsWith(`..${path.sep}`)) return false;
+    return rel.split(path.sep)[0] !== '.git';
+  } catch {
+    return false;
+  }
+}
+
 async function commitFileToBranch(docPath, content, branch = REPO_BRANCH) {
   const encoded = Buffer.from(content, 'utf8').toString('base64');
-  const apiPath = `https://api.github.com/repos/${REPO_NAME}/contents/${docPath}`;
+  // One segment at a time: a name may hold `%2e%2e`, `#` or `?`, which the
+  // URL parser fetch applies would read as `..`, a fragment or a query, and
+  // send the write somewhere other than the doc's own path.
+  const apiPath = `https://api.github.com/repos/${REPO_NAME}/contents/${docPath.split('/').map(encodeURIComponent).join('/')}`;
 
   let existingSha = null;
-  const getRes = await fetch(`${apiPath}?ref=${branch}`, { headers: GH_HEADERS });
+  const getRes = await fetch(`${apiPath}?${new URLSearchParams({ ref: branch })}`, { headers: GH_HEADERS });
   if (getRes.ok) {
     const existing = await getRes.json();
     existingSha = existing.sha || null;
@@ -313,6 +359,10 @@ async function postComment(bodyText) {
 
 async function generateDoc(filePath) {
   const absPath = path.resolve(WORKSPACE, filePath);
+  if (fs.existsSync(absPath) && !isCheckoutFile(absPath)) {
+    console.warn(`  [skip] ${filePath} is a link or leads outside the repository`);
+    return null;
+  }
   let code;
   try { code = fs.readFileSync(absPath, 'utf8'); }
   catch { console.warn(`  [skip] Could not read ${absPath}`); return null; }
@@ -368,9 +418,8 @@ function runPrDriftCheck(changedFiles) {
   let unknown = 0;
 
   for (const filePath of changedFiles) {
-    const docPath = path
-      .join(OUTPUT_DIR, filePath.replace(/\.[^.]+$/, '.md'))
-      .replace(/\\/g, '/');
+    const docPath = docPathFor(filePath);
+    if (!docPath) continue;               // a name that leaves OUTPUT_DIR has no doc
     const docAbs = path.resolve(WORKSPACE, docPath);
 
     let meta = null;
@@ -585,6 +634,12 @@ anything, set \`mode: comment\`.`
 
   for (const filePath of changedFiles) {
     console.log(`\nProcessing: ${filePath}`);
+    // Before generating, so a name that has nowhere to go spends nothing.
+    const docPath = docPathFor(filePath);
+    if (!docPath) {
+      console.warn(`  [skip] ${filePath}: its doc would land outside ${OUTPUT_DIR}`);
+      continue;
+    }
     const result = await generateDoc(filePath);
     if (!result) continue;
 
@@ -600,10 +655,6 @@ anything, set \`mode: comment\`.`
       const u = result.usage;
       console.log(`  [usage] ${u.used}/${u.limit} used this month (${u.plan} plan) -- ${u.remaining} remaining`);
     }
-
-    const docPath = path
-      .join(OUTPUT_DIR, filePath.replace(/\.[^.]+$/, '.md'))
-      .replace(/\\/g, '/');
 
     // Stamp the doc with the commit it was generated at, so drift can be
     // measured against the source file's later history (Phase 1A).
