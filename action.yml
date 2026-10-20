@@ -1,0 +1,161 @@
+# Writulos Auto-Docs — GitHub Action
+# Marketplace metadata lives in this file at the ROOT of the repository.
+# https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions
+
+name: 'Writulos Auto-Docs'
+author: 'Writulos'
+description: 'Automatically generate markdown documentation for every changed code file using Writulos Scribe. Commits docs on push, opens a PR for review, or posts a PR comment.'
+
+branding:
+  icon: 'file-text'
+  color: 'blue'
+
+inputs:
+  writulos_api_key:
+    description: 'Your Writulos Scribe API key (from scribe.writulos.com/dashboard/api-keys). Used to authenticate all generation requests.'
+    required: true
+
+  github_token:
+    description: 'GitHub token for committing docs back to the repo and posting PR comments. Use secrets.GITHUB_TOKEN.'
+    required: true
+
+  mode:
+    description: |
+      Controls how generated docs are delivered:
+        "commit"  — pushes docs directly to the current branch (default)
+        "pr"      — commits docs to a new branch and opens a pull request for review
+        "comment" — posts a PR comment listing what would be documented, no files written
+    required: false
+    default: 'commit'
+
+  file_extensions:
+    description: 'Comma-separated list of file extensions to document (without dots). Only alphanumeric characters and commas are allowed.'
+    required: false
+    default: 'js,ts,jsx,tsx,py,java,kt,scala,go,rb'
+
+  output_dir:
+    description: 'Directory to write generated markdown docs into.'
+    required: false
+    default: 'docs'
+
+  max_files:
+    description: |
+      Maximum files to document in a single run. Each file costs one generation
+      from your monthly quota — and on a team, from the org's shared pool.
+        unset (default) — no cap on push/pull_request runs. A workflow_dispatch
+                          full-repo scan of more than 25 files is refused up
+                          front, before anything is sent, so a big scan can
+                          never surprise you with its cost.
+        "0"             — no cap at all, including full-repo scans.
+        "25"            — document at most 25 files, then stop.
+    required: false
+    default: ''
+
+  api_url:
+    description: 'Writulos API endpoint. Override only if you are self-hosting.'
+    required: false
+    default: 'https://scribe.writulos.com/api/action-generate'
+
+  fail_on_drift:
+    description: |
+      What happens when a changed file's docs are behind the code (doc drift).
+
+        "org"   (default) — follow your account's setting. With the drift gate
+                            switched on (it starts on for Business, off for
+                            everyone else), stale docs FAIL the job. Otherwise
+                            this leaves drift advisory, so adding the Action
+                            never changes what your CI does.
+        "true"            — fail this repo's job on stale docs. Honoured on Pro
+                            and Business; on Free the run says so and stays
+                            advisory.
+        "false"           — never fail this repo's job, whatever the plan allows.
+
+      Failing a build is granted by the server, not by this file: a workflow can
+      ask, but only a Pro or Business subscription can enable it.
+
+      Accurate drift detection needs full git history — use actions/checkout
+      with `fetch-depth: 0`.
+    required: false
+    default: 'org'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: '20'
+        # run.js has no npm dependencies, so it never needs a package
+        # cache. setup-node v5+ switches caching on BY ITSELF when a
+        # repo's package.json carries a `packageManager` field — and in
+        # a CUSTOMER's repo that can fail the run outright if their
+        # lockfile isn't where setup-node expects it. Off, explicitly,
+        # which is exactly how v4 behaved.
+        package-manager-cache: false
+
+    - name: Get changed files
+      id: changed
+      shell: bash
+      run: |
+        EXTS="${{ inputs.file_extensions }}"
+        if ! echo "$EXTS" | grep -qE '^[a-zA-Z0-9]+(,[a-zA-Z0-9]+)*$'; then
+          echo "Error: file_extensions contains invalid characters."
+          exit 1
+        fi
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # Full-repo scan: run.js ignores CHANGED_FILES on workflow_dispatch,
+          # so any non-empty sentinel keeps the next step from being skipped.
+          echo "files=__FULL_SCAN__" >> "$GITHUB_OUTPUT"
+          echo "Writulos: full-repo scan (workflow_dispatch)."
+        else
+          PATTERNS=$(echo "$EXTS" | tr ',' '\n' | sed 's/^/*./' | tr '\n' ' ')
+          # Diff against the right base so a multi-commit push or PR is
+          # covered in full, not just its last commit:
+          #   pull_request → the merge-base with the target branch
+          #   push         → the commit the push started from
+          #   fallback     → HEAD~1 (shallow clones, force-pushes, new branches)
+          BASE=""
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ -n "${{ github.base_ref }}" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" >/dev/null 2>&1 || true
+            BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD 2>/dev/null || true)
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE="HEAD~1"
+          fi
+          # Added, copied, modified or renamed only — a deleted file has
+          # nothing left to document. Newline-separated so filenames
+          # containing commas survive intact.
+          {
+            echo 'files<<WRITULOS_EOF'
+            git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- $PATTERNS 2>/dev/null || true
+            echo 'WRITULOS_EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "Writulos: changed files since $BASE →"
+          git diff --name-only --diff-filter=ACMR "$BASE" HEAD -- $PATTERNS 2>/dev/null || true
+        fi
+
+    - name: Generate and deliver documentation
+      if: steps.changed.outputs.files != ''
+      shell: bash
+      working-directory: ${{ github.action_path }}/action
+      env:
+        CHANGED_FILES: ${{ steps.changed.outputs.files }}
+        WRITULOS_API_KEY: ${{ inputs.writulos_api_key }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        WRITULOS_API_URL: ${{ inputs.api_url }}
+        WRITULOS_OUTPUT_DIR: ${{ inputs.output_dir }}
+        WRITULOS_MODE: ${{ inputs.mode }}
+        WRITULOS_FILE_EXTENSIONS: ${{ inputs.file_extensions }}
+        WRITULOS_FAIL_ON_DRIFT: ${{ inputs.fail_on_drift }}
+        WRITULOS_MAX_FILES: ${{ inputs.max_files }}
+        WRITULOS_WORKSPACE: ${{ github.workspace }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        # On pull_request runs GITHUB_SHA is a synthetic merge commit that no
+        # branch contains. run.js stamps docs with the real head commit instead
+        # so doc-drift lookups can find it later. Empty on every other event.
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        EVENT_NAME: ${{ github.event_name }}
+        REPO_NAME: ${{ github.repository }}
+      run: node run.js
