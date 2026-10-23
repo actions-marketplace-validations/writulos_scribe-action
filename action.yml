@@ -4,7 +4,7 @@
 
 name: 'Writulos Docs'
 author: 'Writulos'
-description: 'Generate documentation for every changed code file using Writulos Scribe. Commits docs on push, opens a PR for review, or posts a PR comment.'
+description: 'Generate documentation for every changed code file using Writulos Scribe.'
 
 branding:
   icon: 'file-text'
