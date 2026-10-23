@@ -2,9 +2,9 @@
 # Marketplace metadata lives in this file at the ROOT of the repository.
 # https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions
 
-name: 'Writulos Auto-Docs'
+name: 'Writulos Docs'
 author: 'Writulos'
-description: 'Automatically generate markdown documentation for every changed code file using Writulos Scribe. Commits docs on push, opens a PR for review, or posts a PR comment.'
+description: 'Generate documentation for every changed code file using Writulos Scribe. Commits docs on push, opens a PR for review, or posts a PR comment.'
 
 branding:
   icon: 'file-text'
