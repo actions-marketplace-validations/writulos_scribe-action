@@ -1,6 +1,6 @@
-# Writulos Auto-Docs — GitHub Action
+# Writulos Scribe: GitHub Action
 
-Automatically generate **markdown documentation** for every changed code file in your repository, powered by [Writulos Scribe](https://scribe.writulos.com).
+Generate **markdown documentation** for every changed code file in your repository, powered by [Writulos Scribe](https://scribe.writulos.com).
 
 - **On push to main/master** → docs are committed directly to your `docs/` folder
 - **On pull requests** → docs for the changed files are committed to the PR branch, and any file whose existing docs are behind the code gets an inline drift warning
@@ -53,14 +53,14 @@ Get your API key from [scribe.writulos.com/dashboard/api-keys](https://scribe.wr
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `writulos_api_key` | ✅ | — | Your Writulos API key. Authenticates every doc generation request. |
-| `github_token` | ✅ | — | Pass `secrets.GITHUB_TOKEN`. Used to commit docs and post PR comments. |
-| `mode` | ❌ | `commit` | `commit` — push docs to branch. `pr` — open a PR for review. `comment` — post a PR comment only. |
-| `file_extensions` | ❌ | `js,ts,jsx,tsx,py,java,kt,scala,go,rb` | Comma-separated extensions to document (no dots). |
-| `output_dir` | ❌ | `docs` | Directory to write generated `.md` files into. |
-| `max_files` | ❌ | _unset_ | Most files one run may document, at one generation each. Unset leaves push and PR runs uncapped and [refuses a full-repo scan](#the-full-repo-scan-and-what-it-costs) of more than 25 files. `0` lifts the cap entirely. |
-| `fail_on_drift` | ❌ | `org` | What a stale doc does to the job. `org` follows your account's setting: the team's switch on a team, the toggle on your Drift page on a solo plan (off until you turn it on, except Business, where it starts on). `true` fails this repo's job on stale docs, on Pro and Business; on Free it warns and stays advisory. `false` never fails this repo's job. Accurate detection needs `actions/checkout` with `fetch-depth: 0`. |
-| `api_url` | ❌ | `https://scribe.writulos.com/api/action-generate` | Override only if self-hosting. |
+| `writulos_api_key` | Yes | — | Your Writulos API key. Authenticates every doc generation request. |
+| `github_token` | Yes | — | Pass `secrets.GITHUB_TOKEN`. Used to commit docs and post PR comments. |
+| `mode` | No | `commit` | `commit` — push docs to branch. `pr` — open a PR for review. `comment` — post a PR comment only. |
+| `file_extensions` | No | `js,ts,jsx,tsx,py,java,kt,scala,go,rb` | Comma-separated extensions to document (no dots). |
+| `output_dir` | No | `docs` | Directory to write generated `.md` files into. |
+| `max_files` | No | _unset_ | Most files one run may document, at one generation each. Unset leaves push and PR runs uncapped and [refuses a full-repo scan](#the-full-repo-scan-and-what-it-costs) of more than 25 files. `0` lifts the cap entirely. |
+| `fail_on_drift` | No | `org` | What a stale doc does to the job. `org` follows your account's setting: the team's switch on a team, the toggle on your Drift page on a solo plan (off until you turn it on, except Business, where it starts on). `true` fails this repo's job on stale docs, on Pro and Business; on Free it warns and stays advisory. `false` never fails this repo's job. Accurate detection needs `actions/checkout` with `fetch-depth: 0`. |
+| `api_url` | No | `https://scribe.writulos.com/api/action-generate` | Override only if self-hosting. |
 
 ---
 
@@ -180,7 +180,6 @@ run:
 
 ```bash
 cd action
-npm install
 CHANGED_FILES="src/utils/auth.ts,api/generate.js" \
 WRITULOS_API_KEY="your-api-key" \
 GITHUB_TOKEN="your-github-token" \
@@ -195,6 +194,3 @@ To exercise the full-repo scan without spending any quota, set
 `GITHUB_EVENT_NAME="workflow_dispatch"` and `WRITULOS_MODE="comment"` — it lists
 the files it would document and generates nothing. Add `WRITULOS_MAX_FILES` to
 try the cap.
-
----
-
